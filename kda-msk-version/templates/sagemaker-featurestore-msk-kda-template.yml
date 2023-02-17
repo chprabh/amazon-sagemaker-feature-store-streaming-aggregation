@@ -1,0 +1,983 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creates resources needed for streaming ingestion using Kinesis Data Analytics, Kafka topics and SageMaker Feature Store.
+Mappings:
+  SubnetConfig:
+    LabVPC:
+      cidr: '10.0.0.0/16'
+    PublicSubnetOne:
+      cidr: '10.0.0.0/24'
+    PublicSubnetTwo:
+      cidr: '10.0.4.0/24'
+    PublicSubnetThree:
+      cidr: '10.0.5.0/24'
+    PrivateSubnetOne:
+      cidr: '10.0.1.0/24'
+    PrivateSubnetTwo:
+      cidr: '10.0.2.0/24'
+    PrivateSubnetThree:
+      cidr: '10.0.3.0/24'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Required Parameters
+      Parameters:
+      - SageMakerStudioUserProfileName
+      - CreditCardAggregateFeatureStoreName
+      - CreditCardAggregateBatchFeatureStoreName
+    ParameterLabels:
+      SageMakerStudioUserProfileName:
+        default: SageMaker Studio user profile name
+      CreditCardAggregateFeatureStoreName:
+        default: Feature Group name for credit card aggregate data
+      CreditCardAggregateBatchFeatureStoreName:
+        default: Feature Group name for credit card batch aggregate data
+
+Parameters:
+  SageMakerStudioUserProfileName:
+    Type: String
+    Description: "SageMaker Studio user profile name "
+    Default: "DefaultUser"
+  CreditCardAggregateFeatureStoreName:
+    Default: cc-agg-fg
+    Type: String
+    Description: CreditCard Aggregate FeatureGroup Name
+    MinLength: 1
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9](-*[a-z0-9])*
+    ConstraintDescription: Must be lowercase or numbers with a length of 1-63 characters.
+  CreditCardAggregateBatchFeatureStoreName:
+    Default: cc-agg-batch-fg
+    Type: String
+    Description: CreditCard Aggregate Batch FeatureGroup Name
+    MinLength: 1
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9](-*[a-z0-9])*
+    ConstraintDescription: Must be lowercase or numbers with a length of 1-63 characters.
+
+Resources:
+
+###
+### VPC
+###
+  LabVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap ['SubnetConfig', 'LabVPC', 'cidr']
+      Tags:
+        - Key: 'Name'
+          Value: !Ref AWS::StackName
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'LabVPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicSubnetOne', 'cidr']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","PublicSubnetOne" ] ]
+  
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'LabVPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicSubnetTwo', 'cidr']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","PublicSubnetTwo" ] ]
+  
+  PublicSubnetThree:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'LabVPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicSubnetThree', 'cidr']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","PublicSubnetThree" ] ]
+  
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'LabVPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateSubnetOne', 'cidr']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","PrivateSubnetOne" ] ]
+  
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'LabVPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateSubnetTwo', 'cidr']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","PrivateSubnetTwo" ] ]
+  
+  PrivateSubnetThree:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'LabVPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateSubnetThree', 'cidr']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","PrivateSubnetThree" ] ]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join [ "-", [ !Ref "AWS::StackName","InternetGateway" ] ]
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'LabVPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+
+  NATIP:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATIP.AllocationId
+      SubnetId: !Ref 'PublicSubnetOne'
+      Tags:
+        - Key: 'Name'
+          Value: !Join [ "-", [ !Ref "AWS::StackName","NatGateway" ] ]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'LabVPC'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: [GatewayAttachment, InternetGateway]
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+  
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+  
+  PublicSubnetThreeRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetThree
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'LabVPC'
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref 'NatGateway'
+
+  PrivateSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetOne
+  
+  PrivateSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetTwo
+  
+  PrivateSubnetThreeRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetThree
+  
+###
+### Security Groups
+###
+
+  MSKClientInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: MSKClientInstanceSecurityGroup
+      GroupDescription: Enable SSH access via port 22 from BastionHostSecurityGroup
+      VpcId: !Ref 'LabVPC'
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 10.0.0.0/24
+    DependsOn: [PrivateRouteTable, PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, PublicSubnetOne, PublicSubnetTwo, PublicSubnetThree]
+
+  SageMakerStudioSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SageMakerStudioSecurityGroup
+      GroupDescription: Security group for SageMaker studio kernel instances
+      VpcId: !Ref 'LabVPC'
+    DependsOn: [PrivateRouteTable, PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, PublicSubnetOne, PublicSubnetTwo, PublicSubnetThree]  
+
+  MSKServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: MSKServiceSecurityGroup
+      GroupDescription: Access to the Kafka service on the MSK cluster
+      VpcId: !Ref 'LabVPC'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          Description: Encrypted Kafka
+          FromPort: 9096
+          ToPort: 9096
+          SourceSecurityGroupId: !GetAtt MSKClientInstanceSecurityGroup.GroupId
+        - IpProtocol: tcp
+          Description: Zookeeper access
+          FromPort: 2181
+          ToPort: 2181
+          SourceSecurityGroupId: !GetAtt MSKClientInstanceSecurityGroup.GroupId
+        - IpProtocol: "-1"
+          Description: Bastion access from client EC2 instance
+          SourceSecurityGroupId: !GetAtt MSKClientInstanceSecurityGroup.GroupId
+    DependsOn: [PrivateRouteTable, PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, PublicSubnetOne, PublicSubnetTwo, PublicSubnetThree]
+
+  MSKPlainTextSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: MSKServiceSecurityGroup
+    Properties: 
+      IpProtocol: tcp
+      GroupId: !Ref MSKServiceSecurityGroup
+      SourceSecurityGroupId: !GetAtt MSKServiceSecurityGroup.GroupId
+      Description: Plaintext Kafka
+      FromPort: 9092
+      ToPort: 9092
+
+  MSKPlainTextSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: MSKServiceSecurityGroup
+    Properties: 
+      IpProtocol: -1
+      GroupId: !Ref MSKServiceSecurityGroup
+      SourceSecurityGroupId: !GetAtt MSKServiceSecurityGroup.GroupId
+      Description: All Traffic from SG
+  
+  SageMakerStudioSecurityGroupSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: SageMakerStudioSecurityGroup
+    Properties:
+      IpProtocol: -1
+      GroupId: !Ref SageMakerStudioSecurityGroup
+      SourceSecurityGroupId: !GetAtt SageMakerStudioSecurityGroup.GroupId
+      Description: All traffic from security group
+
+  SageMakerStudioSecurityGroupMSKIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: [SageMakerStudioSecurityGroup, MSKServiceSecurityGroup]
+    Properties:
+      IpProtocol: -1
+      GroupId: !Ref SageMakerStudioSecurityGroup
+      SourceSecurityGroupId: !GetAtt MSKServiceSecurityGroup.GroupId
+      Description: Alllow all traffic from MSK cluster to SageMaker Studio kernels
+
+  MSKSecurityGroupSageMakerStudioIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: [SageMakerStudioSecurityGroup, MSKServiceSecurityGroup]
+    Properties:
+      IpProtocol: -1
+      GroupId: !Ref MSKServiceSecurityGroup
+      SourceSecurityGroupId: !GetAtt SageMakerStudioSecurityGroup.GroupId
+      Description: Alllow all traffic from SageMaker Studio kernels to MSK cluster    
+
+
+###
+### VPC Endpoints
+###
+
+  SageMakerAPIVPCInterfaceEndpointforPrivateSubnets:
+    Type: AWS::EC2::VPCEndpoint
+    DependsOn: [PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, MSKServiceSecurityGroup, SageMakerStudioSecurityGroup]
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.api'
+      VpcId: !Ref LabVPC
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+        - !Ref PrivateSubnetThree
+      SecurityGroupIds:
+        - !Ref MSKServiceSecurityGroup
+        - !Ref SageMakerStudioSecurityGroup
+    
+  SageMakerRuntimeVPCInterfaceEndpointforPrivateSubnets:
+    Type: AWS::EC2::VPCEndpoint
+    DependsOn: [PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, MSKServiceSecurityGroup, SageMakerStudioSecurityGroup]
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.runtime'
+      VpcId: !Ref LabVPC
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+        - !Ref PrivateSubnetThree
+      SecurityGroupIds:
+        - !Ref MSKServiceSecurityGroup
+        - !Ref SageMakerStudioSecurityGroup
+    
+
+  S3VPCGatewayEndpointforPrivateSubnets:
+    Type: AWS::EC2::VPCEndpoint
+    DependsOn: [PublicRouteTable, PrivateRouteTable]
+    Properties:
+      VpcEndpointType: Gateway
+      PrivateDnsEnabled: false
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - '*'
+            Resource:
+              - '*'
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateRouteTable
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref LabVPC
+
+
+  ElasticFileSystemVPCInterfaceEndpointforPrivateSubnets:
+    Type: AWS::EC2::VPCEndpoint
+    DependsOn: [PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, MSKServiceSecurityGroup, SageMakerStudioSecurityGroup]
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.elasticfilesystem'
+      VpcId: !Ref LabVPC
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+        - !Ref PrivateSubnetThree
+      SecurityGroupIds:
+        - !Ref MSKServiceSecurityGroup
+        - !Ref SageMakerStudioSecurityGroup
+
+###
+### IAM Roles
+###
+
+  SageMakerExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/AmazonKinesisAnalyticsFullAccess
+
+  KDAStreamingApplicationExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: KDAStreamingApplicationExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - kinesisanalytics.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
+        - arn:aws:iam::aws:policy/AmazonVPCCrossAccountNetworkInterfaceOperations
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Description: Lambda Role that can create KDA Apps
+      Path: "/"
+      Policies: 
+        - PolicyName: AllowCreateKDAApp
+          PolicyDocument: {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Action": "kinesisanalytics:*",
+                "Effect": "Allow",
+                "Resource": "*"
+              },
+              {
+                "Action": "iam:*",
+                "Effect": "Allow",
+                "Resource": "*"
+              },
+              {
+                "Action":"logs:*",
+                "Effect": "Allow",
+                "Resource": "*"
+              },
+              {
+                "Action":"ec2:*",
+                "Effect": "Allow",
+                "Resource": "*"
+              },
+              {
+                "Action":"kafka:*",
+                "Effect": "Allow",
+                "Resource": "*"
+              }
+            ]
+          }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      RoleName: LambdaRole
+  
+  LambdaExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Path: /
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: CloudWatchLogsPermissions
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:${AWS::Partition}:logs:*:*:*"
+          - Sid: SageMakerDomainPermission
+            Effect: Allow
+            Action:
+              - sagemaker:CreateDomain
+              - sagemaker:DescribeDomain
+              - sagemaker:DeleteDomain
+              - sagemaker:UpdateDomain
+              - sagemaker:CreateUserProfile
+              - sagemaker:UpdateUserProfile
+              - sagemaker:DeleteUserProfile
+              - sagemaker:DescribeUserProfile
+            Resource:
+              - !Sub "arn:${AWS::Partition}:sagemaker:*:*:domain/*"
+              - !Sub "arn:${AWS::Partition}:sagemaker:*:*:user-profile/*"
+          - Sid: SageMakerExecPassRole
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !GetAtt  SageMakerExecutionRole.Arn
+      Roles:
+        - !Ref LambdaRole
+
+  KDAStudioExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kinesisanalytics.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
+        - arn:aws:iam::aws:policy/AmazonKinesisAnalyticsFullAccess
+        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Policies:
+        - PolicyName: glue-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:*
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                Resource:
+                  - "*"
+        - PolicyName: kinesis-analytics-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - "kinesisanalytics:*"
+                Resource:
+                  - "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonKinesisFullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+
+###
+### S3 BUCKET
+###
+
+  KDAStreamingApplicationS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - "kda-streaming-app"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+
+###
+### LAMBDA LAYERS
+###
+
+  Boto3LibLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+      - python3.6
+      - python3.7
+      Content:
+        S3Bucket: aws-blogs-artifacts-public
+        S3Key: artifacts/ML-13533/boto3-1-16-28.zip
+      Description: Upgraded version of boto3 library for SageMaker FeatureStore - obtained from a public S3 bucket
+      LicenseInfo: MIT
+
+###
+### LAMBDA
+###
+
+  PredictLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: InvokeFraudEndpointLambda
+      Description: LambdaFunction for Python
+      Runtime: python3.7
+      Handler: lambda_function.lambda_handler
+      Code:
+        S3Bucket: aws-blogs-artifacts-public
+        S3Key: artifacts/ML-13533/InvokeFraudEndpointlambda_function.zip
+      Layers:
+        - Ref: Boto3LibLayer
+      MemorySize: 512
+      Timeout: 60
+      Role:
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn
+      Environment:
+        Variables:
+          CC_AGG_FEATURE_GROUP_NAME:
+            Ref: CreditCardAggregateFeatureStoreName
+          CC_AGG_BATCH_FEATURE_GROUP_NAME:
+            Ref: CreditCardAggregateBatchFeatureStoreName
+          ENDPOINT_NAME: this_will_be_overwritten_by_notebook
+          FRAUD_THRESHOLD: 0.25
+          LOG_LEVEL: INFO
+          HOME: /tmp
+
+  IngestLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: StreamingIngestAggFeatures
+      Description: LambdaFunction for Python
+      Runtime: python3.7
+      Handler: lambda_function.lambda_handler
+      Code:
+        S3Bucket: aws-blogs-artifacts-public
+        S3Key: artifacts/ML-13533/StreamingIngestAggFeatureslambda_function.zip
+      Layers:
+      - Ref: Boto3LibLayer
+      MemorySize: 512
+      Timeout: 60
+      Role:
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn
+      Environment:
+        Variables:
+          CC_AGG_FEATURE_GROUP_NAME:
+            Ref: CreditCardAggregateFeatureStoreName
+          HOME: /tmp
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties: 
+      Code: 
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import cfnresponse
+          import datetime
+
+          def handler(event, context):
+                  
+            try:
+                  APPLICATION_NAME = 'kda-msk-streaming'
+                  RUNTIME_ENVIRONMENT = 'ZEPPELIN-FLINK-2_0'
+                  client = boto3.client('kinesisanalyticsv2')
+
+                  print("Received Event:\n" + json.dumps(event))
+
+                  
+                  if(event["RequestType"] == "Create"):
+                      create_response = client.create_application(
+                        ApplicationName=APPLICATION_NAME,
+                        ApplicationDescription='Apache Flink running in a Zeppelin Notebook',
+                        RuntimeEnvironment=RUNTIME_ENVIRONMENT,
+                        ServiceExecutionRole=os.environ["ApplicationRole"],
+                        ApplicationConfiguration={
+                            'FlinkApplicationConfiguration': {
+                                'ParallelismConfiguration': {
+                                    'ConfigurationType': 'CUSTOM',
+                                    'Parallelism': 4,
+                                    'ParallelismPerKPU': 1,
+                                    'AutoScalingEnabled': False
+                                }
+                            },
+                            'VpcConfigurations': [
+                                {
+                                    'SubnetIds': [
+                                        os.environ["Subnet1"],
+                                        os.environ["Subnet2"],
+                                        os.environ["Subnet3"]
+                                        ],
+                                    'SecurityGroupIds': [
+                                        os.environ["SecurityGroupId"]
+                                    ]
+                                },
+                            ],
+                            'ZeppelinApplicationConfiguration': {
+                                'MonitoringConfiguration': {
+                                    'LogLevel': 'INFO'
+                                },
+                                'CatalogConfiguration': {
+                                    'GlueDataCatalogConfiguration': {
+                                        'DatabaseARN': os.environ["GlueARN"]
+                                    }
+                                },
+                                'DeployAsApplicationConfiguration': {
+                                    'S3ContentLocation': {
+                                        'BucketARN': os.environ["S3ARN"],
+                                        'BasePath': '/'
+                                    }
+                                },                                
+                                'CustomArtifactsConfiguration': [
+                                    {
+                                        'ArtifactType': 'DEPENDENCY_JAR',
+                                        'MavenReference': {
+                                            'GroupId': 'org.apache.flink',
+                                            'ArtifactId': 'flink-connector-kafka_2.12',
+                                            'Version': '1.13.2'
+                                        }
+                                    },
+                                ]
+                            }
+                        },
+                        ApplicationMode='INTERACTIVE'
+                    )
+                    
+                      print("CREATE RESPONSE", create_response)
+
+
+                      start_response = client.start_application(
+                          ApplicationName=APPLICATION_NAME
+                      )
+                      print("START RESPONSE", start_response)
+                      #TODO: Get physical ID
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, start_response)
+                  elif(event["RequestType"] == "Delete"):
+                    
+                      describe_response = client.describe_application(
+                                                      ApplicationName=APPLICATION_NAME,
+                                                      IncludeAdditionalDetails=True
+                                                  )
+                                            
+                      print("DESCRIBE: " + str(describe_response["ApplicationDetail"]))      
+                      app_detail = describe_response["ApplicationDetail"]
+                      delete_response = client.delete_application(
+                        ApplicationName=APPLICATION_NAME,
+                        CreateTimestamp=app_detail["CreateTimestamp"])
+                        
+                      print("DELETE" + str(delete_response))
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, delete_response)
+                  else:
+                      cfnresponse.send(event, context, cfnresponse.FAILED, "Internal Error")
+            except Exception as err:
+                cfnresponse.send(event, context, cfnresponse.FAILED, err)
+      Description: Lambda Function To Create KDA App in VPC
+      Environment: 
+          Variables: 
+            Subnet1 : !Ref PrivateSubnetOne
+            Subnet2 : !Ref PrivateSubnetTwo
+            Subnet3 : !Ref PrivateSubnetThree
+            ApplicationRole: !GetAtt KDAStudioExecutionRole.Arn
+            SecurityGroupId: !Ref MSKServiceSecurityGroup
+            GlueARN: !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/kdastudio"
+            S3ARN: !GetAtt KDAStreamingApplicationS3Bucket.Arn     
+      FunctionName: create_kda_app_in_vpc
+      Role: { "Fn::GetAtt" : [ "LambdaRole", "Arn" ] }
+      Runtime: python3.8
+      Handler: index.handler
+      Timeout: 300
+    DependsOn: [PrivateSubnetOne, PrivateSubnetTwo, PrivateSubnetThree, KDAStudioExecutionRole, MSKServiceSecurityGroup, KDAStreamingApplicationS3Bucket]
+
+###
+### GLUE
+###
+  KDAStudioGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: kdastudio
+        Description: Glue database for KDA Studio
+
+###
+### MSK Cluster
+###
+
+  MSKLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${AWS::StackName}-msk-log-group"
+
+  MSKCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      BrokerNodeGroupInfo:
+        InstanceType: kafka.t3.small
+        ClientSubnets:
+          - !Ref PrivateSubnetOne
+          - !Ref PrivateSubnetTwo
+        SecurityGroups: [!Ref MSKServiceSecurityGroup]
+        StorageInfo:
+          EBSStorageInfo:
+            VolumeSize: 10
+      ClusterName: !Sub "${AWS::StackName}-msk-cluster"
+      LoggingInfo:
+        BrokerLogs: 
+          CloudWatchLogs:
+            Enabled: true
+            LogGroup: !Ref  MSKLogGroup
+      EncryptionInfo:
+        EncryptionInTransit:
+          ClientBroker: TLS_PLAINTEXT
+          InCluster: false
+      EnhancedMonitoring: DEFAULT
+      KafkaVersion: 2.8.0
+      NumberOfBrokerNodes: 2
+    DependsOn: [MSKClientInstanceSecurityGroup, MSKServiceSecurityGroup, LabVPC, NatGateway, InternetGateway]
+
+###
+### KDA Studio
+###
+  
+  KDAStudioApp:
+      Type: 'Custom::KinesisDataAnalyticsCreate'
+      Properties:
+        ServiceToken: 
+              !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:create_kda_app_in_vpc
+      DependsOn: [PublicSubnetOne, PublicSubnetTwo, PublicSubnetThree, PrivateSubnetOne,
+       PrivateSubnetTwo, PrivateSubnetThree,
+        LambdaFunction, LabVPC, NatGateway,
+         InternetGateway,
+          KDAStudioGlueDatabase, KDAStudioExecutionRole]
+
+###
+### SageMaker Studio
+###
+
+  StudioDomain:
+    Type: AWS::SageMaker::Domain
+    DependsOn: [SageMakerExecutionRole, SageMakerStudioSecurityGroup, PrivateSubnetOne, LabVPC]
+    Properties:
+      AppNetworkAccessType: VpcOnly
+      AppSecurityGroupManagement: Customer
+      AuthMode: IAM
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups: [!Ref SageMakerStudioSecurityGroup]
+        JupyterServerAppSettings: 
+          DefaultResourceSpec: 
+            SageMakerImageArn: 'arn:aws:sagemaker:us-east-1:081325390199:image/jupyter-server-3'
+            InstanceType: system
+      DomainName: "kda-msk-smfs-domain"
+      SubnetIds: 
+        - !Ref PrivateSubnetOne
+      VpcId: !Ref 'LabVPC'
+
+  UserProfile:
+    Type: AWS::SageMaker::UserProfile
+    DependsOn: [StudioDomain, SageMakerExecutionRole, SageMakerStudioSecurityGroup]
+    Properties:
+      DomainId: !GetAtt StudioDomain.DomainId
+      UserProfileName: !Ref SageMakerStudioUserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups: [!Ref SageMakerStudioSecurityGroup]
+
+
+  StudioApp:
+    Type: AWS::SageMaker::App
+    DependsOn: [UserProfile, StudioDomain, SageMakerExecutionRole, SageMakerStudioSecurityGroup]
+    Properties:
+      AppName: default
+      AppType: JupyterServer
+      DomainId: !GetAtt StudioDomain.DomainId
+      UserProfileName: !Ref SageMakerStudioUserProfileName
+   
+        
+###
+### CloudFormation Stack Outputs
+###
+
+Outputs:
+  KDAStreamingApplicationS3BucketName:
+    Value: !Ref KDAStreamingApplicationS3Bucket
+    Description: Name of the S3 bucket that hosts the KDA App
+  LambdaRoleARN:
+    Description: Role for Lambda execution.
+    Value:
+      Fn::GetAtt:
+      - LambdaRole
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: LambdaRole
+  PredictLambdaFunctionName:
+    Value:
+      Ref: PredictLambdaFunction
+  PredictLambdaFunctionARN:
+    Description: Lambda function ARN.
+    Value:
+      Fn::GetAtt:
+      - PredictLambdaFunction
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: PredictLambdaARN
+  IngestLambdaFunctionName:
+    Value:
+      Ref: IngestLambdaFunction
+  IngestLambdaFunctionARN:
+    Description: Lambda function ARN.
+    Value:
+      Fn::GetAtt:
+      - IngestLambdaFunction
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: IngestLambdaARN
